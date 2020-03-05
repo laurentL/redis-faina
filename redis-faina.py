@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 import argparse
+import re
 import sys
 from collections import defaultdict
-import re
 
 line_re_24 = re.compile(r"""
     ^(?P<timestamp>[\d\.]+)\s(\(db\s(?P<db>\d+)\)\s)?"(?P<command>\w+)"(\s"(?P<key>[^(?<!\\)"]+)(?<!\\)")?(\s(?P<args>.+))?$
@@ -12,25 +12,26 @@ line_re_26 = re.compile(r"""
     ^(?P<timestamp>[\d\.]+)\s\[(?P<db>\d+)\s\d+\.\d+\.\d+\.\d+:\d+]\s"(?P<command>\w+)"(\s"(?P<key>[^(?<!\\)"]+)(?<!\\)")?(\s(?P<args>.+))?$
     """, re.VERBOSE)
 
+
 class StatCounter(object):
 
-    def __init__(self, prefix_delim=':', redis_version=2.6):
+    def __init__(self, prefix_delimiliter=':', redis_version=2.6):
         self.line_count = 0
         self.skipped_lines = 0
         self.commands = defaultdict(int)
         self.keys = defaultdict(int)
         self.prefixes = defaultdict(int)
-        self.times = []
+        self.times = list()
         self._cached_sorts = {}
         self.start_ts = None
         self.last_ts = None
         self.last_entry = None
-        self.prefix_delim = prefix_delim
+        self.prefix_delimiter = prefix_delimiliter
         self.redis_version = redis_version
         self.line_re = line_re_24 if self.redis_version < 2.5 else line_re_26
 
     def _record_duration(self, entry):
-        ts = float(entry['timestamp']) * 1000 * 1000 # microseconds
+        ts = float(entry['timestamp']) * 1000 * 1000  # microseconds
         if not self.start_ts:
             self.start_ts = ts
             self.last_ts = ts
@@ -49,7 +50,7 @@ class StatCounter(object):
 
     def _record_key(self, key):
         self.keys[key] += 1
-        parts = key.split(self.prefix_delim)
+        parts = key.split(self.prefix_delimiter)
         if len(parts) > 1:
             self.prefixes[parts[0]] += 1
 
@@ -65,11 +66,15 @@ class StatCounter(object):
             output += ' %s%s' % (' '.join(arg_parts[0:max_args_to_show]), ellipses)
         return output
 
-
     def _get_or_sort_list(self, ls):
+        """
+
+        :type ls: list
+        """
         key = id(ls)
-        if not key in self._cached_sorts:
-            sorted_items = sorted(ls)
+        if key not in self._cached_sorts:
+            sorted_items = ls.copy()
+            sorted_items.sort(key=lambda x: x[0], reverse=False)
             self._cached_sorts[key] = sorted_items
         return self._cached_sorts[key]
 
@@ -87,19 +92,18 @@ class StatCounter(object):
 
     def _heaviest_commands(self, times):
         times_by_command = defaultdict(int)
-        for time, entry in times:
-            times_by_command[entry['command']] += time
+        for cur_time, entry in times:
+            times_by_command[entry['command']] += cur_time
         return self._top_n(times_by_command)
 
     def _slowest_commands(self, times, n=8):
         sorted_times = self._get_or_sort_list(times)
         slowest_commands = reversed(sorted_times[-n:])
-        printable_commands = [(str(time), self._reformat_entry(entry)) \
-                              for time, entry in slowest_commands]
+        printable_commands = [(str(cur_time), self._reformat_entry(entry)) for cur_time, entry in slowest_commands]
         return printable_commands
 
     def _general_stats(self):
-        total_time = (self.last_ts - self.start_ts) / (1000*1000)
+        total_time = (self.last_ts - self.start_ts) / (1000 * 1000)
         return (
             ("Lines Processed", self.line_count),
             ("Commands/Sec", '%.2f' % (self.line_count / total_time))
@@ -111,15 +115,23 @@ class StatCounter(object):
         if entry['key']:
             self._record_key(entry['key'])
 
-    def _top_n(self, stat, n=8):
-        sorted_items = sorted(stat.iteritems(), key = lambda x: x[1], reverse = True)
+    @staticmethod
+    def _top_n(stat, n=8):
+        """
+
+        :param stat: defaultdict
+        :type stat: defaultdict
+        :type n: int
+        :rtype : defaultdict
+        """
+        sorted_items = sorted(stat.items(), key=lambda x: x[1], reverse=True)
         return sorted_items[:n]
 
     def _pretty_print(self, result, title, percentages=False):
-        print title
-        print '=' * 40
+        print(title)
+        print('=' * 40)
         if not result:
-            print 'n/a\n'
+            print('n/a\n')
             return
 
         max_key_len = max((len(x[0]) for x in result))
@@ -129,21 +141,20 @@ class StatCounter(object):
             if percentages:
                 val_padding = max(max_val_len - len(str(val)), 0) * ' '
                 val = '%s%s\t(%.2f%%)' % (val, val_padding, (float(val) / self.line_count) * 100)
-            print key,key_padding,'\t',val
-        print
-
+            print(key, key_padding, '\t', val)
+        print()
 
     def print_stats(self):
         self._pretty_print(self._general_stats(), 'Overall Stats')
-        self._pretty_print(self._top_n(self.prefixes), 'Top Prefixes', percentages = True)
-        self._pretty_print(self._top_n(self.keys), 'Top Keys', percentages = True)
-        self._pretty_print(self._top_n(self.commands), 'Top Commands', percentages = True)
+        self._pretty_print(self._top_n(self.prefixes), 'Top Prefixes', percentages=True)
+        self._pretty_print(self._top_n(self.keys), 'Top Keys', percentages=True)
+        self._pretty_print(self._top_n(self.commands), 'Top Commands', percentages=True)
         self._pretty_print(self._time_stats(self.times), 'Command Time (microsecs)')
         self._pretty_print(self._heaviest_commands(self.times), 'Heaviest Commands (microsecs)')
         self._pretty_print(self._slowest_commands(self.times), 'Slowest Calls')
 
-    def process_input(self, input):
-        for line in input:
+    def process_input(self, input_data):
+        for line in input_data:
             self.line_count += 1
             line = line.strip()
             match = self.line_re.match(line)
@@ -153,27 +164,28 @@ class StatCounter(object):
                 continue
             self.process_entry(match.groupdict())
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         'input',
-        type = argparse.FileType('r'),
-        default = sys.stdin,
-        nargs = '?',
-        help = "File to parse; will read from stdin otherwise")
+        type=argparse.FileType('r'),
+        default=sys.stdin,
+        nargs='?',
+        help="File to parse; will read from stdin otherwise")
     parser.add_argument(
         '--prefix-delimiter',
-        type = str,
-        default = ':',
-        help = "String to split on for delimiting prefix and rest of key",
-        required = False)
+        type=str,
+        default=':',
+        help="String to split on for delimiting prefix and rest of key",
+        required=False)
     parser.add_argument(
         '--redis-version',
-        type = float,
-        default = 2.6,
-        help = "Version of the redis server being monitored",
-        required = False)
+        type=float,
+        default=2.6,
+        help="Version of the redis server being monitored",
+        required=False)
     args = parser.parse_args()
-    counter = StatCounter(prefix_delim = args.prefix_delimiter, redis_version = args.redis_version)
+    counter = StatCounter(prefix_delimiliter=args.prefix_delimiter, redis_version=args.redis_version)
     counter.process_input(args.input)
     counter.print_stats()
